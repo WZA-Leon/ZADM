@@ -32,7 +32,7 @@
 ### 1. 获取代码
 
 ```bash
-git clone https://github.com/yourusername/ZADM.git
+git clone https://github.com/WZA-Leon/ZADM.git
 cd ZADM
 ```
 ##2. 准备姓名数据
