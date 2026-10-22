@@ -1,28 +1,222 @@
-import tkinter as tk
-from tkinter import messagebox
+# -*- coding: utf-8 -*-
+"""ZADM 姓名管理窗口（浅色主题，与主界面保持一致的视觉风格）"""
+
 import json
 import os
+import tkinter as tk
+from tkinter import messagebox
 
+# ---------------------------------------------------------------- 主题
+BG = '#f4f8fd'
+PANEL = '#ffffff'
+FIELD = '#f8fbff'
+ROW = '#ffffff'
+ROW_HOVER = '#eef6ff'
+ROW_SELECTED = '#dceeff'
+BORDER = '#d5e3f0'
+TEXT = '#22313f'
+MUTED = '#5a6f88'
+ACCENT = '#1b86bd'
+GREEN = '#2e9e6b'
+GREEN_HOVER = '#38b57c'
+RED = '#d1495b'
+RED_HOVER = '#e05b6d'
+DIM = '#e6f1fb'
+DIM_HOVER = '#d5e6f6'
+
+
+def _rgb(color):
+    color = color.lstrip('#')
+    return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+
+
+def _mix(c1, c2, k):
+    """颜色插值，用于悬停 / 勾选的平滑过渡"""
+    k = max(0.0, min(1.0, k))
+    a, b = _rgb(c1), _rgb(c2)
+    return '#%02x%02x%02x' % tuple(int(a[i] + (b[i] - a[i]) * k) for i in range(3))
+
+
+# ---------------------------------------------------------------- 动画按钮
+class FlatButton(tk.Button):
+    """扁平按钮，鼠标移入 / 移出时底色平滑渐变"""
+
+    def __init__(self, master, base, hover, **kwargs):
+        # 浅色主题：深底配白字、浅底配深字，自动选择可读的前景色
+        if 'fg' not in kwargs:
+            lum = sum(_rgb(base)) / 3.0
+            kwargs['fg'] = '#ffffff' if lum < 150 else TEXT
+        kwargs.setdefault('font', ('微软雅黑', 10))
+        kwargs.setdefault('relief', 'flat')
+        kwargs.setdefault('bd', 0)
+        kwargs.setdefault('cursor', 'hand2')
+        kwargs.setdefault('activebackground', hover)
+        kwargs.setdefault('activeforeground', kwargs['fg'])
+        kwargs.setdefault('highlightthickness', 0)
+        kwargs.setdefault('padx', 12)
+        kwargs.setdefault('pady', 5)
+        tk.Button.__init__(self, master, bg=base, **kwargs)
+        self._base = base
+        self._hover = hover
+        self._t = 0.0
+        self._target = 0.0
+        self._job = None
+        self.bind('<Enter>', self._on_enter)
+        self.bind('<Leave>', self._on_leave)
+
+    def _on_enter(self, event=None):
+        self._go(1.0)
+
+    def _on_leave(self, event=None):
+        self._go(0.0)
+
+    def _go(self, target):
+        self._target = target
+        if self._job is None:
+            self._step()
+
+    def _step(self):
+        self._t += (self._target - self._t) * 0.3
+        if abs(self._target - self._t) < 0.02:
+            self._t = self._target
+            self._job = None
+        else:
+            try:
+                self._job = self.after(16, self._step)
+            except tk.TclError:
+                self._job = None
+                return
+        try:
+            self.configure(bg=_mix(self._base, self._hover, self._t))
+        except tk.TclError:
+            self._job = None
+
+
+# ---------------------------------------------------------------- 名单行
+class CheckRow:
+    """名单中的一行：整行可点击勾选，带悬停 / 勾选过渡动画"""
+
+    HEIGHT = 34
+
+    def __init__(self, master, name, on_change, wheel=None):
+        self.name = name
+        self.checked = False
+        self.hover = False
+        self.hover_t = 0.0
+        self.check_t = 0.0
+        self.settled = True
+        self.on_change = on_change
+        self.width = 320
+
+        self.c = tk.Canvas(master, height=self.HEIGHT, bg=ROW, highlightthickness=0,
+                           bd=0, cursor='hand2')
+        self.c.pack(fill=tk.X, pady=1)
+        self._draw()
+        self.c.bind('<Configure>', self._on_configure)
+        self.c.bind('<Button-1>', self.toggle)
+        self.c.bind('<Enter>', self._on_enter)
+        self.c.bind('<Leave>', self._on_leave)
+        if wheel is not None:
+            for seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+                self.c.bind(seq, wheel)
+
+    def _draw(self):
+        self.c.delete('all')
+        height = self.HEIGHT
+        self.bg_item = self.c.create_rectangle(0, 0, self.width, height,
+                                               outline='', fill=ROW)
+        # 行分隔线，让长名单在浅色背景上更易读
+        self.line_item = self.c.create_line(12, height - 1, self.width - 12, height - 1,
+                                            fill='#edf3fa')
+        box, x = 18, 12
+        y = (height - box) / 2.0
+        self.box_item = self.c.create_rectangle(x, y, x + box, y + box,
+                                                outline=BORDER, width=2, fill=ROW)
+        # 勾选用折线绘制，避免字体缺少 U+2713 时显示成方块
+        self.tick_item = self.c.create_line(x + 5, y + 9, x + 8, y + 12, x + 14, y + 5,
+                                            fill=ROW, width=2,
+                                            capstyle=tk.ROUND, joinstyle=tk.ROUND)
+        self.text_item = self.c.create_text(42, height / 2.0, text=self.name,
+                                            anchor='w', font=('微软雅黑', 11),
+                                            fill=TEXT)
+
+    def _on_configure(self, event):
+        if event.width != self.width:
+            self.width = event.width
+            self.c.coords(self.bg_item, 0, 0, self.width, self.HEIGHT)
+            self.c.coords(self.line_item, 12, self.HEIGHT - 1,
+                          self.width - 12, self.HEIGHT - 1)
+
+    def _on_enter(self, event=None):
+        self.hover = True
+        self.settled = False
+
+    def _on_leave(self, event=None):
+        self.hover = False
+        self.settled = False
+
+    def toggle(self, event=None):
+        self.checked = not self.checked
+        self.settled = False
+        if self.on_change is not None:
+            self.on_change()
+        return 'break'
+
+    def update(self):
+        """逐帧过渡；动画结束后自动跳过，避免无谓开销"""
+        if self.settled:
+            return
+        check_target = 1.0 if self.checked else 0.0
+        hover_target = 1.0 if self.hover else 0.0
+        self.check_t += (check_target - self.check_t) * 0.3
+        self.hover_t += (hover_target - self.hover_t) * 0.3
+        if abs(self.check_t - check_target) < 0.02:
+            self.check_t = check_target
+        if abs(self.hover_t - hover_target) < 0.02:
+            self.hover_t = hover_target
+        if self.check_t == check_target and self.hover_t == hover_target:
+            self.settled = True
+        try:
+            base = _mix(ROW, ROW_SELECTED, self.check_t)
+            bg = _mix(base, ROW_HOVER, self.hover_t * 0.85)
+            box_fill = _mix(ROW, ACCENT, self.check_t)
+            self.c.itemconfig(self.bg_item, fill=bg)
+            self.c.configure(bg=bg)
+            self.c.itemconfig(self.box_item, fill=box_fill,
+                              outline=_mix(BORDER, ACCENT,
+                                           max(self.check_t, self.hover_t)))
+            self.c.itemconfig(self.tick_item,
+                              fill=_mix(box_fill, '#ffffff', self.check_t))
+            self.c.itemconfig(self.text_item,
+                              fill=_mix(TEXT, ACCENT, 0.35 * self.hover_t))
+        except tk.TclError:
+            self.settled = True
+
+
+# ---------------------------------------------------------------- 窗口
 class NameManager:
     def __init__(self, master, json_path):
         self.master = master
         self.json_path = json_path
         self.names = []
-        self.check_vars = []  # 存储每个姓名的 BooleanVar
+        self.rows = []
+        self.alive = True
+        self.status_dirty = True
 
-        # 先加载数据
         self.load_names()
-
-        # 创建界面
         self.create_widgets()
-        self.refresh_list()   # 填充初始列表
+        self.refresh_list()
+        self.master.protocol('WM_DELETE_WINDOW', self.close)
+        self.tick()
 
+    # ---------------- 数据 ----------------
     def load_names(self):
         """从 JSON 文件加载名单"""
         try:
             with open(self.json_path, 'r', encoding='utf-8') as f:
-                self.names = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
+                data = json.load(f)
+            self.names = [str(n).strip() for n in data if str(n).strip()]
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
             self.names = []
 
     def save_names(self):
@@ -31,114 +225,173 @@ class NameManager:
             os.makedirs(os.path.dirname(self.json_path), exist_ok=True)
             with open(self.json_path, 'w', encoding='utf-8') as f:
                 json.dump(self.names, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            messagebox.showerror("错误", f"保存失败：{e}")
+        except OSError as e:
+            messagebox.showerror('错误', '保存失败：%s' % e, parent=self.master)
 
+    # ---------------- 界面 ----------------
     def create_widgets(self):
-        """搭建界面"""
-        self.master.title("姓名管理")
+        self.master.configure(bg=BG)
+        self.master.title('名单管理')
+        self.master.geometry('560x660')
+        self.master.minsize(520, 560)
 
-        # ---- 批量添加区域 ----
-        add_frame = tk.LabelFrame(self.master, text="批量添加（每行一个姓名）", padx=5, pady=5)
-        add_frame.pack(fill=tk.X, padx=10, pady=10)
+        header = tk.Frame(self.master, bg=BG)
+        header.pack(fill=tk.X, padx=16, pady=(14, 8))
+        tk.Label(header, text='名单管理', bg=BG, fg=TEXT,
+                 font=('华文中宋', 16, 'bold')).pack(side=tk.LEFT)
+        self.count_label = tk.Label(header, text='', bg=BG, fg=MUTED,
+                                    font=('微软雅黑', 9))
+        self.count_label.pack(side=tk.RIGHT)
 
-        self.text_input = tk.Text(add_frame, height=8, width=40, font=("微软雅黑", 11))
+        # ---- 批量添加 ----
+        add_panel = tk.Frame(self.master, bg=PANEL, highlightthickness=1,
+                             highlightbackground=BORDER)
+        add_panel.pack(fill=tk.X, padx=16)
+        tk.Label(add_panel, text='批量添加（每行一个姓名，重复的会自动忽略）',
+                 bg=PANEL, fg=MUTED, font=('微软雅黑', 9)).pack(anchor=tk.W,
+                                                                padx=12, pady=(10, 4))
+        add_row = tk.Frame(add_panel, bg=PANEL)
+        add_row.pack(fill=tk.X, padx=12, pady=(0, 12))
+
+        self.text_input = tk.Text(add_row, height=5, font=('微软雅黑', 11), bg=FIELD,
+                                  fg=TEXT, insertbackground=ACCENT, relief=tk.FLAT,
+                                  bd=0, padx=8, pady=6, highlightthickness=1,
+                                  highlightbackground=BORDER, highlightcolor=ACCENT,
+                                  selectbackground='#bfe0f5', selectforeground=TEXT,
+                                  wrap=tk.WORD)
         self.text_input.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        FlatButton(add_row, GREEN, GREEN_HOVER, text='添加到名单',
+                   command=self.add_names, width=10).pack(side=tk.RIGHT,
+                                                          padx=(10, 0), anchor=tk.N)
 
-        btn_frame = tk.Frame(add_frame)
-        btn_frame.pack(side=tk.RIGHT, padx=(5, 0))
+        # ---- 名单列表 ----
+        list_panel = tk.Frame(self.master, bg=BG)
+        list_panel.pack(fill=tk.BOTH, expand=True, padx=16, pady=(12, 0))
+        head = tk.Frame(list_panel, bg=BG)
+        head.pack(fill=tk.X)
+        tk.Label(head, text='当前名单（点击行勾选）', bg=BG, fg=MUTED,
+                 font=('微软雅黑', 9)).pack(side=tk.LEFT)
+        self.sel_label = tk.Label(head, text='', bg=BG, fg=MUTED,
+                                  font=('微软雅黑', 9))
+        self.sel_label.pack(side=tk.RIGHT)
 
-        add_btn = tk.Button(btn_frame, text="添加到名单", command=self.add_names, bg="#4CAF50", fg="white",
-                            font=("微软雅黑", 11), width=10)
-        add_btn.pack(pady=5)
+        body = tk.Frame(list_panel, bg=PANEL, highlightthickness=1,
+                        highlightbackground=BORDER)
+        body.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
 
-        # ---- 列表展示区域 ----
-        list_frame = tk.LabelFrame(self.master, text="当前名单（勾选后点击删除）", padx=5, pady=5)
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-
-        # Canvas + Scrollbar 实现滚动
-        self.canvas = tk.Canvas(list_frame, bg="white", highlightthickness=0)
-        self.scrollbar = tk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.canvas.yview)
-        self.scrollable_frame = tk.Frame(self.canvas, bg="white")
-
-        self.scrollable_frame.bind(
-            "<Configure>",
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        )
-
-        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas = tk.Canvas(body, bg=PANEL, highlightthickness=0, bd=0)
+        self.scrollbar = tk.Scrollbar(body, orient=tk.VERTICAL,
+                                      command=self.canvas.yview)
+        self.inner = tk.Frame(self.canvas, bg=PANEL)
+        self.inner_id = self.canvas.create_window((0, 0), window=self.inner,
+                                                  anchor='nw')
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
-
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-	
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6, pady=6)
 
-	    # ---------- 绑定鼠标滚轮 ----------
-        def _on_mousewheel(event):
-            # Windows / macOS
-            if event.delta:
-                self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            else:
-                # Linux: Button-4 向上，Button-5 向下
-                if event.num == 4:
-                    self.canvas.yview_scroll(-1, "units")
-                elif event.num == 5:
-                    self.canvas.yview_scroll(1, "units")
+        self.inner.bind('<Configure>', self._on_inner_configure)
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
+        for seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+            self.canvas.bind(seq, self._on_wheel)
+            self.inner.bind(seq, self._on_wheel)
 
-        # 绑定到 Canvas 和内部的 scrollable_frame（让滚轮在整个列表区域都有效）
-        self.canvas.bind("<MouseWheel>", _on_mousewheel)      # Windows/macOS
-        self.scrollable_frame.bind("<MouseWheel>", _on_mousewheel)
+        # ---- 底部操作 ----
+        bottom = tk.Frame(self.master, bg=BG)
+        bottom.pack(fill=tk.X, padx=16, pady=10)
+        FlatButton(bottom, RED, RED_HOVER, text='删除选中',
+                   command=self.delete_selected).pack(side=tk.LEFT)
+        self.all_btn = FlatButton(bottom, DIM, DIM_HOVER, text='全选',
+                                  command=self.toggle_all)
+        self.all_btn.pack(side=tk.LEFT, padx=(8, 0))
+        FlatButton(bottom, DIM, DIM_HOVER, text='刷新列表',
+                   command=self.refresh_list).pack(side=tk.LEFT, padx=(8, 0))
+        self.status_label = tk.Label(bottom, text='', bg=BG, fg=MUTED,
+                                     font=('微软雅黑', 9))
+        self.status_label.pack(side=tk.RIGHT)
 
-        # Linux 滚轮事件
-        self.canvas.bind("<Button-4>", lambda e: _on_mousewheel(e))
-        self.canvas.bind("<Button-5>", lambda e: _on_mousewheel(e))
-        self.scrollable_frame.bind("<Button-4>", lambda e: _on_mousewheel(e))
-        self.scrollable_frame.bind("<Button-5>", lambda e: _on_mousewheel(e))
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfigure(self.inner_id, width=event.width)
 
+    def _on_inner_configure(self, event):
+        self.canvas.configure(scrollregion=self.canvas.bbox('all'))
 
-        # ---- 底部操作按钮 ----
-        bottom_frame = tk.Frame(self.master)
-        bottom_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+    def _on_wheel(self, event):
+        if getattr(event, 'delta', 0):
+            step = -1 if event.delta > 0 else 1
+            self.canvas.yview_scroll(step, 'units')
+        elif getattr(event, 'num', None) == 4:
+            self.canvas.yview_scroll(-1, 'units')
+        elif getattr(event, 'num', None) == 5:
+            self.canvas.yview_scroll(1, 'units')
+        return 'break'
 
-        delete_btn = tk.Button(bottom_frame, text="删除选中", command=self.delete_selected,
-                               bg="#f44336", fg="white", font=("微软雅黑", 11), width=10)
-        delete_btn.pack(side=tk.LEFT, padx=(0, 10))
-
-        refresh_btn = tk.Button(bottom_frame, text="刷新列表", command=self.refresh_list,
-                                bg="#2196F3", fg="white", font=("微软雅黑", 11), width=10)
-        refresh_btn.pack(side=tk.LEFT)
-
+    # ---------------- 列表刷新 ----------------
     def refresh_list(self):
-        """刷新界面中的姓名列表（重新加载文件并重建复选框）"""
-        # 清除旧控件
-        for widget in self.scrollable_frame.winfo_children():
+        """重建列表（同时重新读取文件，避免外部修改不同步）"""
+        for widget in self.inner.winfo_children():
             widget.destroy()
-        self.check_vars.clear()
-
-        # 重新加载文件（以防外部修改）
+        self.rows = []
         self.load_names()
 
-        # 为每个姓名创建一行（复选框 + 标签）
-        for i, name in enumerate(self.names):
-            var = tk.BooleanVar(value=False)
-            cb = tk.Checkbutton(self.scrollable_frame, text=name, variable=var,
-                                font=("微软雅黑", 11), bg="white", anchor="w")
-            cb.pack(fill=tk.X, padx=5, pady=2)
-            self.check_vars.append((name, var))
+        if not self.names:
+            tk.Label(self.inner, text='名单还是空的\n在上面粘贴姓名后点击“添加到名单”',
+                     bg=PANEL, fg=MUTED, font=('微软雅黑', 10),
+                     justify=tk.CENTER).pack(pady=48)
+        else:
+            for name in self.names:
+                self.rows.append(CheckRow(self.inner, name, self.on_row_change,
+                                          wheel=self._on_wheel))
 
+        self.status_dirty = True
+        self.inner.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+        self.canvas.yview_moveto(0)
+
+    def on_row_change(self):
+        self.status_dirty = True
+
+    def toggle_all(self):
+        if not self.rows:
+            return
+        target = not all(row.checked for row in self.rows)
+        for row in self.rows:
+            if row.checked != target:
+                row.checked = target
+                row.settled = False
+        self.status_dirty = True
+
+    # ---------------- 逐帧动画 ----------------
+    def tick(self):
+        if not self.alive:
+            return
+        try:
+            for row in self.rows:
+                row.update()
+            if self.status_dirty:
+                self._refresh_status()
+        except tk.TclError:
+            return
+        self.master.after(40, self.tick)
+
+    def _refresh_status(self):
+        total = len(self.rows)
+        selected = sum(1 for row in self.rows if row.checked)
+        self.count_label.configure(text='共 %d 人' % total)
+        self.sel_label.configure(text=('已选 %d 人' % selected) if selected else '')
+        self.status_label.configure(text='共 %d 人 · 已选 %d 人' % (total, selected))
+        self.all_btn.configure(text='取消全选' if total and selected == total else '全选')
+        self.status_dirty = False
+
+    # ---------------- 增删 ----------------
     def add_names(self):
         """处理批量添加"""
-        text = self.text_input.get("1.0", tk.END).strip()
+        text = self.text_input.get('1.0', tk.END).strip()
         if not text:
             return
 
         new_names = [line.strip() for line in text.splitlines()]
-        new_names = [n for n in new_names if n]  # 滤空
+        new_names = [n for n in new_names if n]
 
-        if not new_names:
-            return
-
-        # 去重
         added = 0
         for name in new_names:
             if name not in self.names:
@@ -146,39 +399,80 @@ class NameManager:
                 added += 1
 
         if added == 0:
-            messagebox.showinfo("提示", "没有新姓名添加（全部已存在）。")
+            messagebox.showinfo('提示', '没有新姓名添加（全部已存在）。', parent=self.master)
         else:
             self.save_names()
-            self.text_input.delete("1.0", tk.END)  # 清空输入框
+            self.text_input.delete('1.0', tk.END)
             self.refresh_list()
-            messagebox.showinfo("成功", f"成功添加 {added} 个姓名。")
+            messagebox.showinfo('成功', '成功添加 %d 个姓名。' % added, parent=self.master)
 
     def delete_selected(self):
         """批量删除选中的姓名"""
-        selected_names = [name for name, var in self.check_vars if var.get()]
-        if not selected_names:
-            messagebox.showinfo("提示", "请至少勾选一个姓名。")
+        selected = [row.name for row in self.rows if row.checked]
+        if not selected:
+            messagebox.showinfo('提示', '请至少勾选一个姓名。', parent=self.master)
             return
 
-        if messagebox.askyesno("确认删除", f"确定要删除选中的 {len(selected_names)} 个姓名吗？"):
-            for name in selected_names:
-                if name in self.names:
-                    self.names.remove(name)
+        if messagebox.askyesno('确认删除',
+                               '确定要删除选中的 %d 个姓名吗？' % len(selected),
+                               parent=self.master):
+            removed = set(selected)
+            self.names = [n for n in self.names if n not in removed]
             self.save_names()
             self.refresh_list()
-            messagebox.showinfo("完成", f"已删除 {len(selected_names)} 个姓名。")
+            messagebox.showinfo('完成', '已删除 %d 个姓名。' % len(selected),
+                                parent=self.master)
+
+    def close(self):
+        self.alive = False
+        try:
+            self.master.destroy()
+        except tk.TclError:
+            pass
+
+
+_manager_window = None
 
 
 def open_name_manager(json_path):
-    """外部调用的接口：弹出姓名管理窗口"""
+    """外部调用的接口：弹出姓名管理窗口（已打开时只做置顶）"""
+    global _manager_window
+    if _manager_window is not None:
+        try:
+            if _manager_window.winfo_exists():
+                _manager_window.lift()
+                _manager_window.focus_force()
+                return
+        except tk.TclError:
+            pass
+
     win = tk.Toplevel()
-    win.geometry("500x600")
+    win.configure(bg=BG)
     win.resizable(True, True)
-    app = NameManager(win, json_path)
+    try:
+        win.iconbitmap(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    'data', 'zadm.ico'))
+    except Exception:
+        pass
+
+    NameManager(win, json_path)
     win.lift()
     win.focus_force()
-    # 如果图标文件存在则设置，否则忽略
+    _manager_window = win
+
+    # 窗口淡入
     try:
-        win.iconbitmap(r'data/zadm.ico')
-    except:
+        steps = 10
+        win.attributes('-alpha', 0.0)
+
+        def fade(i=1):
+            try:
+                win.attributes('-alpha', min(1.0, i / float(steps)))
+            except tk.TclError:
+                return
+            if i < steps:
+                win.after(16, lambda: fade(i + 1))
+
+        win.after(16, fade)
+    except tk.TclError:
         pass
