@@ -1,0 +1,13 @@
+__pycache__/
+venv
+temp/ 
+dist/
+dist/**
+build/
+build/**
+len/
+*.len
+*.txt
+*.cmd
+.vscode/
+runtime/
