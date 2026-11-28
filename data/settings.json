@@ -1,0 +1,12 @@
+{
+  "draw_count": 1,
+  "roll_interval": 40,
+  "bag_mode": true,
+  "auto_balance": false,
+  "balance_strength": 2.0,
+  "password_hash": "",
+  "password_salt": "",
+  "password_protected": false,
+  "manual_probs": {},
+  "theme": "circuit"
+}
